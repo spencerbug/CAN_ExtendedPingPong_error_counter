@@ -1,0 +1,114 @@
+<pre>
+<span style="color: #7E7E7E;">//&nbsp;Arduino&nbsp;Due&nbsp;-&nbsp;CANbus&nbsp;Library&nbsp;-&nbsp;Extended&nbsp;Frames&nbsp;with&nbsp;Ping/Pong&nbsp;sending</span>
+<span style="color: #7E7E7E;">//&nbsp;Ping/Pong&nbsp;torture&nbsp;test&nbsp;with&nbsp;extended&nbsp;frames.</span>
+<span style="color: #7E7E7E;">//&nbsp;This&nbsp;example&nbsp;sets&nbsp;up&nbsp;a&nbsp;receive&nbsp;and&nbsp;transmit&nbsp;mailbox&nbsp;on&nbsp;both&nbsp;canbus&nbsp;devices.</span>
+<span style="color: #7E7E7E;">//&nbsp;First&nbsp;CAN0&nbsp;sends&nbsp;to&nbsp;CAN1.&nbsp;When&nbsp;CAN1&nbsp;receives&nbsp;it&nbsp;sends&nbsp;to&nbsp;CAN0.&nbsp;PING/PONGs&nbsp;forever</span>
+<span style="color: #7E7E7E;">//&nbsp;and&nbsp;as&nbsp;quickly&nbsp;as&nbsp;possible&nbsp;-&nbsp;This&nbsp;will&nbsp;saturate&nbsp;the&nbsp;bus&nbsp;so&nbsp;don't&nbsp;have&nbsp;anything&nbsp;important&nbsp;connected.</span>
+<span style="color: #7E7E7E;">//&nbsp;By&nbsp;Thibaut&nbsp;Viard/Wilfredo&nbsp;Molina/Collin&nbsp;Kidder&nbsp;2014</span>
+<span style="color: #7E7E7E;">//&nbsp;Code&nbsp;Modified&nbsp;by&nbsp;Spencer&nbsp;Neilan,&nbsp;2014&nbsp;to&nbsp;include&nbsp;error&nbsp;counter</span>
+
+<span style="color: #7E7E7E;">//&nbsp;Required&nbsp;libraries</span>
+#include&nbsp;<span style="color: #006699;">"variant.h"</span>
+#include&nbsp;&lt;due_can.h&gt;
+
+#define&nbsp;TEST1_CAN_TRANSFER_ID&nbsp;&nbsp;&nbsp;&nbsp;0x11AE756A&nbsp;<span style="color: #7E7E7E;">//random 29 bits</span>
+#define&nbsp;TEST1_CAN0_TX_PRIO&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;15
+#define&nbsp;CAN_MSG_DUMMY_DATA&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;0x11BFFA4E
+
+<span style="color: #7E7E7E;">//&nbsp;CAN&nbsp;frame&nbsp;max&nbsp;data&nbsp;length</span>
+#define&nbsp;MAX_CAN_FRAME_DATA_LEN&nbsp;&nbsp;&nbsp;8
+
+uint32_t&nbsp;sentFrames,&nbsp;receivedFrames;
+
+<span style="color: #7E7E7E;">//Leave&nbsp;this&nbsp;defined&nbsp;if&nbsp;you&nbsp;use&nbsp;the&nbsp;native&nbsp;port&nbsp;or&nbsp;comment&nbsp;it&nbsp;out&nbsp;if&nbsp;you&nbsp;use&nbsp;the&nbsp;programming&nbsp;port</span>
+#define&nbsp;<span style="color: #CC6600;"><b>Serial</b></span> <span style="color: #CC6600;"><b>SerialUSB</b></span>
+
+CAN_FRAME&nbsp;frame1,&nbsp;frame2,&nbsp;incoming;
+
+<span style="color: #CC6600;">void</span> <span style="color: #CC6600;"><b>setup</b></span>() {
+
+<span style="color: #7E7E7E;">//&nbsp;start&nbsp;serial&nbsp;port&nbsp;at&nbsp;115200&nbsp;bps:&nbsp;</span>
+&nbsp;&nbsp;<span style="color: #CC6600;"><b>Serial</b></span>.<span style="color: #CC6600;">begin</span>(115200);
+&nbsp;&nbsp;
+&nbsp;&nbsp;<span style="color: #7E7E7E;">// Verify CAN0 and CAN1 initialization, baudrate is 1Mb/s:</span>
+&nbsp;&nbsp;<span style="color: #CC6600;">if</span> (<span style="color: #CC6600;"><b>CAN</b></span>.<span style="color: #CC6600;">init</span>(<span style="color: #006699;">CAN_BPS_1000K</span>) &amp;&amp;
+	&nbsp;&nbsp;<span style="color: #CC6600;"><b>CAN2</b></span>.<span style="color: #CC6600;">init</span>(<span style="color: #006699;">CAN_BPS_1000K</span>)) {
+&nbsp;&nbsp;}
+&nbsp;&nbsp;<span style="color: #CC6600;">else</span> {
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>Serial</b></span>.<span style="color: #CC6600;">println</span>(<span style="color: #006699;">"CAN initialization (sync) ERROR"</span>);
+&nbsp;&nbsp;}
+&nbsp;&nbsp;
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//Initialize the definitions for the frames we'll be sending.</span>
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//This can be done here because the frame never changes</span>
+&nbsp;&nbsp;frame1.id&nbsp;=&nbsp;TEST1_CAN_TRANSFER_ID;
+&nbsp;&nbsp;frame1.<span style="color: #CC6600;">length</span> = MAX_CAN_FRAME_DATA_LEN;
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//Below we set the 8 data bytes in 32 bit (4 byte) chunks</span>
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//Bytes can be set individually with frame1.data.bytes[which] = something</span>
+&nbsp;&nbsp;frame1.data.low&nbsp;=&nbsp;0x20103040;
+&nbsp;&nbsp;frame1.data.high&nbsp;=&nbsp;CAN_MSG_DUMMY_DATA;
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//We are using extended frames so mark that here. Otherwise it will just use</span>
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//the first 11 bits of the ID set</span>
+&nbsp;&nbsp;frame1.extended&nbsp;=&nbsp;1;
+&nbsp;&nbsp;
+&nbsp;&nbsp;frame2.id&nbsp;=&nbsp;TEST1_CAN_TRANSFER_ID&nbsp;+&nbsp;0x200;
+&nbsp;&nbsp;frame2.<span style="color: #CC6600;">length</span> = MAX_CAN_FRAME_DATA_LEN;
+&nbsp;&nbsp;frame2.data.low&nbsp;=&nbsp;0xB8C8A8E8;
+&nbsp;&nbsp;frame2.data.high&nbsp;=&nbsp;0x01020304;
+&nbsp;&nbsp;frame2.extended&nbsp;=&nbsp;1;
+&nbsp;&nbsp;
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//Both of these lines create a filter on the corresponding CAN device that allows</span>
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//just the one ID we're interested in to get through.</span>
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//The syntax is (mailbox #, ID, mask, extended)</span>
+&nbsp;&nbsp;<span style="color: #7E7E7E;">//You can also leave off the mailbox number: (ID, mask, extended)</span>
+&nbsp;&nbsp;<span style="color: #CC6600;"><b>CAN2</b></span>.setRXFilter(0, TEST1_CAN_TRANSFER_ID + 0x200, 0x1FFFFFFF, <span style="color: #CC6600;">true</span>);
+&nbsp;&nbsp;<span style="color: #CC6600;"><b>CAN</b></span>.setRXFilter(0, TEST1_CAN_TRANSFER_ID, 0x1FFFFFFF, <span style="color: #CC6600;">true</span>);
+&nbsp;&nbsp;
+&nbsp;&nbsp;test_1();
+}
+
+<span style="color: #7E7E7E;">//&nbsp;Test&nbsp;rapid&nbsp;fire&nbsp;ping/pong&nbsp;of&nbsp;extended&nbsp;frames</span>
+<span style="color: #CC6600;">static</span> <span style="color: #CC6600;">void</span> test_1(<span style="color: #CC6600;">void</span>)
+{
+&nbsp;&nbsp;
+&nbsp;&nbsp;CAN_FRAME&nbsp;inFrame;
+&nbsp;&nbsp;uint32_t&nbsp;counter&nbsp;=&nbsp;0;
+&nbsp;&nbsp;uin32_t&nbsp;errorcount&nbsp;=&nbsp;0;
+&nbsp;&nbsp;<span style="color: #7E7E7E;">// Send out the first frame</span>
+&nbsp;&nbsp;<span style="color: #CC6600;"><b>CAN</b></span>.sendFrame(frame2);
+&nbsp;&nbsp;sentFrames++;
+&nbsp;&nbsp;
+&nbsp;&nbsp;<span style="color: #CC6600;">while</span> (1==1) {
+&nbsp;&nbsp;&nbsp;&nbsp;errorcount&nbsp;=&nbsp;<span style="color: #CC6600;"><b>CAN</b></span>.<span style="color: #CC6600;">get_tx_error_cnt</span>() + <span style="color: #CC6600;"><b>CAN</b></span>.<span style="color: #CC6600;">get_rx_error_cnt</span>() + <span style="color: #CC6600;"><b>CAN2</b></span>.<span style="color: #CC6600;">get_tx_error_cnt</span>() + <span style="color: #CC6600;"><b>CAN2</b></span>.<span style="color: #CC6600;">get_rx_error_cnt</span>();
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;">if</span> (<span style="color: #CC6600;"><b>CAN</b></span>.<span style="color: #CC6600;">rx_avail</span>()) {
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>CAN</b></span>.<span style="color: #CC6600;">get_rx_buff</span>(incoming);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>CAN</b></span>.sendFrame(frame2);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;">delayMicroseconds</span>(100);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sentFrames++;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;receivedFrames++;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;counter++;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;">if</span> (<span style="color: #CC6600;"><b>CAN2</b></span>.<span style="color: #CC6600;">rx_avail</span>()) {
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>CAN2</b></span>.<span style="color: #CC6600;">get_rx_buff</span>(incoming);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>CAN2</b></span>.sendFrame(frame1);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;">delayMicroseconds</span>(100);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;sentFrames++;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;receivedFrames++;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;counter++;
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;">if</span> (counter &gt; 5000) {
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;counter&nbsp;=&nbsp;0;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>Serial</b></span>.<span style="color: #CC6600;">print</span>(<span style="color: #006699;">"S: "</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>Serial</b></span>.<span style="color: #CC6600;">print</span>(sentFrames);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>Serial</b></span>.<span style="color: #CC6600;">print</span>(<span style="color: #006699;">" R: "</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>Serial</b></span>.<span style="color: #CC6600;">print</span>(receivedFrames);
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<span style="color: #CC6600;"><b>Serial</b></span>.<span style="color: #CC6600;">print</span>(<span style="color: #006699;">" Error Count: "</span>);
+&nbsp;&nbsp;&nbsp;&nbsp;}
+&nbsp;&nbsp;}
+}
+
+<span style="color: #7E7E7E;">//&nbsp;can_example&nbsp;application&nbsp;entry&nbsp;point</span>
+<span style="color: #CC6600;">void</span> <span style="color: #CC6600;"><b>loop</b></span>()
+{
+}
+
+</pre>
